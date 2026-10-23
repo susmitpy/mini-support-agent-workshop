@@ -18,7 +18,7 @@ In this workshop you build a tiny customer-support assistant that answers
 - How an LLM agent calls a **Python tool** to get facts instead of guessing.
 - How **Pydantic** forces the LLM to return a validated, structured answer.
 - How to expose the same Python function as an **MCP tool**.
-- How to discover and call that tool from the **MCP Inspector**.
+- How to discover and call that tool over the MCP protocol with an MCP client.
 - The difference between an agent's own tools and tools shared over MCP.
 
 ## 2. Architecture
@@ -30,7 +30,7 @@ flowchart LR
     G -- false, default --> M[Deterministic mock LLM]
     G -- true --> F[Gemini Flash]
     A -- agent tool: get_order --> L[lookup_order]
-    I[MCP Inspector / any MCP client] --> S[MCP server]
+    I[Any MCP client] --> S[MCP server]
     S -- MCP tool: get_order --> L
     L --> D[(Mock order data)]
 ```
@@ -56,7 +56,7 @@ the mock fails too. Get everything working with the mock, then switch to Gemini.
 
 | | Agent tool (`agent.py`) | MCP tool (`server.py`) |
 |---|---|---|
-| Who can call it | Only this one Pydantic AI agent | Any MCP client: Inspector, Claude Desktop, IDEs, other agents |
+| Who can call it | Only this one Pydantic AI agent | Any MCP client: Claude Desktop, IDEs, other agents |
 | How it is wired | A Pydantic AI tool decorator on the agent; called in-process | The MCP server's tool decorator; called over the MCP protocol (stdio here) |
 | Needs an LLM key | Only when `USE_GEMINI=true` | No, it only returns mock data |
 
@@ -80,8 +80,7 @@ tests/
 ## 4. Prerequisites
 
 - Python 3.11 or newer (`python --version`).
-- GitHub Codespaces (recommended; Python and Node.js are preinstalled) **or** local Python.
-- Node.js 18+ for the MCP Inspector (`node --version`). Not needed for the agent itself.
+- GitHub Codespaces (recommended; Python is preinstalled) **or** local Python.
 - A Google account for a free Gemini API key (only for the final Gemini step).
 
 ## 5. Create `.env`
@@ -175,27 +174,22 @@ The live test checks that Gemini called `get_order`, that the reply validates as
 `SupportReply`, that `order_id` and `status` match the mock data, and that the
 key never appears in the output.
 
-## 10. Run the MCP server and test it in the MCP Inspector
-
-The server uses the **stdio** transport: the client starts it as a subprocess
-and talks to it over stdin/stdout. Running it alone just waits for input.
-
-**Inspector web UI:**
+## 10. Run the MCP server
 
 ```bash
-npx @modelcontextprotocol/inspector .venv/bin/python -m mini_support_agent.server
+python -m mini_support_agent.server
 ```
 
-Open the URL it prints, click **Connect**, go to **Tools → List Tools**, pick
-`get_order`, enter `ORD-101`, and click **Run Tool**. You should see the
-delayed keyboard order. Try `ord-999` too.
+The server uses the **stdio** transport: an MCP client starts it as a
+subprocess and talks to it over stdin/stdout. Running it alone just waits for
+input (press Ctrl+C to stop).
 
-**Inspector CLI** (handy in Codespaces or if the browser UI will not connect):
+`tests/test_server.py` acts as that client. It uses the official MCP Python
+client to list the server's tools and call `get_order`, first in memory and then
+over real stdio:
 
 ```bash
-npx @modelcontextprotocol/inspector --cli .venv/bin/python -m mini_support_agent.server --method tools/list
-npx @modelcontextprotocol/inspector --cli .venv/bin/python -m mini_support_agent.server \
-  --method tools/call --tool-name get_order --tool-arg order_id=ORD-101
+pytest tests/test_server.py -v
 ```
 
 ## 11. Exercise (branch `main`, about 25 minutes)
@@ -206,7 +200,7 @@ npx @modelcontextprotocol/inspector --cli .venv/bin/python -m mini_support_agent
 3. **TODO 2** in `agent.py`: register the `get_order` agent tool. Run
    `pytest tests/test_agent.py`, then `python -m mini_support_agent.agent`.
 4. **TODO 3** in `server.py`: expose `get_order` as an MCP tool. Run
-   `pytest tests/test_server.py`, then open it in the MCP Inspector (step 10).
+   `pytest tests/test_server.py` (step 10).
 5. Switch to Gemini (step 6), run `python -m mini_support_agent.agent` again
    and compare its wording with the mock's. Finish with `pytest -m live -v`.
 
@@ -217,7 +211,6 @@ npx @modelcontextprotocol/inspector --cli .venv/bin/python -m mini_support_agent
 - [ ] `get_order` is registered on `mcp_server` as an MCP tool and returns the shared lookup's result.
 - [ ] `pytest` passes (17 tests).
 - [ ] The agent answers ORD-101 with the mock LLM.
-- [ ] `get_order` shows up and runs in the MCP Inspector.
 - [ ] With `USE_GEMINI=true`, the agent answers ORD-101 and `pytest -m live -v` passes (2 tests).
 
 ### Which test failures are expected on `main`
@@ -238,7 +231,6 @@ fails, your setup is wrong, not your TODO code.
 
 - `pytest` prints `17 passed, 2 deselected`.
 - `python -m mini_support_agent.agent` prints `"status": "delayed"` for ORD-101, first with the mock LLM, then with Gemini.
-- The MCP Inspector lists `get_order` and returns the ORD-101 record.
 - `pytest -m live -v` prints `2 passed`.
 
 ## 13. Troubleshooting
@@ -254,20 +246,18 @@ fails, your setup is wrong, not your TODO code.
 | Network errors | Check your internet connection or proxy; Codespaces needs no extra setup. |
 | `ModuleNotFoundError: mini_support_agent` | Activate the venv and run `pip install -e ".[dev]"` from the project root. |
 | `No module named 'mcp.server.fastmcp'` | You followed an MCP SDK v1 tutorial. This project uses SDK v2, where it is `from mcp.server import MCPServer`. |
-| `npx: command not found` | Install Node.js 18+ (preinstalled in Codespaces). |
-| Inspector UI will not connect in Codespaces | Use the Inspector CLI commands in step 10, or make sure ports 6274 and 6277 are forwarded. |
 | Status is `not_found` for a real-looking ID | Only `ORD-100`, `ORD-101` and `ORD-102` exist. Unknown IDs are meant to return `not_found`. |
 | Pydantic AI prints a large banner | Harmless. The agent module hides it with `PYDANTIC_AI_NO_BANNER=1`. |
 
 ## 14. Extensions
 
 - Add an order with status `cancelled` and update `SupportReply.status`.
-- Add a second MCP tool, e.g. `list_orders`, and see it appear in the Inspector.
+- Add a second MCP tool, e.g. `list_orders`, and a test that lists and calls it.
 - Connect the agent to the MCP server instead of the in-process tool, using
   Pydantic AI's MCP client support.
 - Add the server to Claude Desktop or your IDE's MCP settings.
 
 ## 15. What is real and what is not
 
-- **Real:** the Gemini API calls (when `USE_GEMINI=true`), Pydantic validation, the MCP protocol and Inspector.
+- **Real:** the Gemini API calls (when `USE_GEMINI=true`), Pydantic validation, the MCP protocol.
 - **Mocked:** the LLM by default (`USE_GEMINI=false`), and every order. No real orders, customers, shipments, refunds, or emails exist or happen.

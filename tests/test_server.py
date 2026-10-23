@@ -1,7 +1,7 @@
 """Protocol-level tests for the MCP server.
 
 These use the official MCP Python client, first in memory and then over real
-stdio (the same transport the MCP Inspector uses). No API key is needed.
+stdio (the same transport desktop MCP clients use). No API key is needed.
 """
 
 import sys

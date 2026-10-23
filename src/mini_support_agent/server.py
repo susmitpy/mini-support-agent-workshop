@@ -1,6 +1,6 @@
 """MCP server that exposes the mock order lookup as a discoverable tool.
 
-Any MCP client (the MCP Inspector, Claude Desktop, an IDE, another agent) can
+Any MCP client (Claude Desktop, an IDE, another agent) can
 list this server's tools and call ``get_order``. The tool reuses
 ``lookup_order``, the same function the Pydantic AI agent uses, so there is one
 dataset and one copy of the business logic. No Gemini key is needed here.
@@ -21,7 +21,7 @@ mcp_server = MCPServer(
 # TODO 3a: Expose get_order as an MCP tool by adding mcp_server's tool decorator
 #   on the line above "def" (note: in MCP SDK v2 this decorator is called,
 #   i.e. it has parentheses). The function name becomes the tool name and the
-#   docstring becomes the description clients see in the Inspector.
+#   docstring becomes the description clients see when they list tools.
 def get_order(order_id: str) -> dict[str, str]:
     """Look up a mock order by ID (read-only, fake workshop data).
 
