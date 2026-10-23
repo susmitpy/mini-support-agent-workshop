@@ -1,20 +1,20 @@
 """Tests for the Pydantic AI agent.
 
-Offline tests use Pydantic AI's ``TestModel`` and ``FunctionModel``, so they need
-no API key and cost nothing. Tests marked ``live`` call the real Gemini API and
-only run with ``pytest -m live``.
+Offline tests use Pydantic AI's ``TestModel`` and the workshop's deterministic
+mock LLM, so they need no API key and cost nothing. Tests marked ``live``
+call the real Gemini API and only run with ``pytest -m live``.
 """
 
 import os
 
 import pytest
-from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.messages import ModelMessage, ToolReturnPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.test import TestModel
 
 from mini_support_agent import agent as agent_module
 from mini_support_agent.agent import SupportReply, get_order, support_agent
+from mini_support_agent.mock_llm import build_mock_model
 from mini_support_agent.order_data import lookup_order
 
 
@@ -43,33 +43,48 @@ def test_agent_tool_uses_shared_lookup():
     assert get_order("ORD-999")["status"] == "not_found"
 
 
-def scripted_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    """Fake LLM: first asks for ORD-101, then answers from the tool's data."""
-    returns = tool_returns(messages)
-    if not returns:
-        return ModelResponse(parts=[ToolCallPart("get_order", {"order_id": "ORD-101"})])
-    order = returns[-1].content
-    assert isinstance(order, dict), f"get_order did not return order data: {order!r}"
-    reply = {
-        "order_id": order["order_id"],
-        "status": order["status"],
-        "explanation": f"Order is {order['status']}.",
-        "suggested_reply": "Sorry for the wait.",
-    }
-    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, reply)])
+@pytest.mark.parametrize(
+    ("question", "order_id", "status"),
+    [
+        ("Where is my order ord-101?", "ORD-101", "delayed"),
+        ("Has ORD-100 arrived?", "ORD-100", "delivered"),
+        ("Check ORD-999 please", "ORD-999", "not_found"),
+    ],
+)
+def test_mock_llm_answers_from_tool_data(question, order_id, status):
+    result = support_agent.run_sync(question, model=build_mock_model())
+    assert tool_returns(result.all_messages()), "the mock LLM should have called get_order"
+    assert result.output.order_id == order_id
+    assert result.output.status == status
 
 
-def test_agent_answers_from_tool_data():
-    result = support_agent.run_sync("Where is ORD-101?", model=FunctionModel(scripted_model))
-    assert result.output.order_id == "ORD-101"
-    assert result.output.status == "delayed"
+def test_mock_llm_is_deterministic():
+    first = support_agent.run_sync("Where is ORD-102?", model=build_mock_model())
+    second = support_agent.run_sync("Where is ORD-102?", model=build_mock_model())
+    assert first.output == second.output
 
 
-def test_missing_api_key_gives_helpful_error(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+@pytest.fixture
+def no_dotenv(monkeypatch):
+    """Ignore the real .env so tests control USE_GEMINI and GEMINI_API_KEY."""
     monkeypatch.setattr(agent_module, "load_dotenv", lambda: None)
+
+
+def test_mock_llm_is_the_default(monkeypatch, no_dotenv):
+    monkeypatch.delenv("USE_GEMINI", raising=False)
+    assert agent_module.build_model().model_name == "mock-llm"
+
+
+def test_use_gemini_switches_to_gemini(monkeypatch, no_dotenv):
+    monkeypatch.setenv("USE_GEMINI", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
+    assert isinstance(agent_module.build_model(), GoogleModel)
+
+
+def test_missing_api_key_gives_helpful_error(monkeypatch, no_dotenv):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY is not set"):
-        agent_module.build_model()
+        agent_module.build_gemini_model()
 
 
 @pytest.mark.live
@@ -81,7 +96,7 @@ def test_missing_api_key_gives_helpful_error(monkeypatch):
     ],
 )
 def test_live_gemini_reply(question, order_id, status, capsys):
-    result = support_agent.run_sync(question, model=agent_module.build_model())
+    result = support_agent.run_sync(question, model=agent_module.build_gemini_model())
     reply = result.output
 
     assert isinstance(reply, SupportReply)

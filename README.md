@@ -26,7 +26,9 @@ In this workshop you build a tiny customer-support assistant that answers
 ```mermaid
 flowchart LR
     U[Customer question] --> A[Pydantic AI agent]
-    A <--> G[Gemini Flash]
+    A <--> G{USE_GEMINI?}
+    G -- false, default --> M[Deterministic mock LLM]
+    G -- true --> F[Gemini Flash]
     A -- agent tool: get_order --> L[lookup_order]
     I[MCP Inspector / any MCP client] --> S[MCP server]
     S -- MCP tool: get_order --> L
@@ -36,13 +38,27 @@ flowchart LR
 The LLM **interprets and drafts**; Python supplies the **authoritative data**.
 `lookup_order` in `order_data.py` is the only place order facts come from.
 
+### Mock LLM first, then Gemini
+
+`USE_GEMINI` in `.env` picks the LLM:
+
+| `USE_GEMINI` | LLM | API key | Output |
+|---|---|---|---|
+| `false` (default) | Deterministic mock in `mock_llm.py` | Not needed | Same text every run |
+| `true` | Gemini Flash | Needed | Wording varies between runs |
+
+The mock is not a shortcut around your code. Like Gemini, it reads the order ID
+from the question, **asks the agent to call `get_order`**, and builds the reply
+from what the tool returns. If your tool or `lookup_order` is missing or wrong,
+the mock fails too. Get everything working with the mock, then switch to Gemini.
+
 ### Agent tool vs MCP tool
 
 | | Agent tool (`agent.py`) | MCP tool (`server.py`) |
 |---|---|---|
 | Who can call it | Only this one Pydantic AI agent | Any MCP client: Inspector, Claude Desktop, IDEs, other agents |
 | How it is wired | A Pydantic AI tool decorator on the agent; called in-process | The MCP server's tool decorator; called over the MCP protocol (stdio here) |
-| Needs an LLM key | Yes, the agent talks to Gemini | No, it only returns mock data |
+| Needs an LLM key | Only when `USE_GEMINI=true` | No, it only returns mock data |
 
 Both call the same `lookup_order`, so there is one dataset and one copy of the
 business logic.
@@ -53,6 +69,7 @@ business logic.
 src/mini_support_agent/
   order_data.py   mock orders + lookup_order()          (TODO 1 on main)
   agent.py        Pydantic AI agent, SupportReply model (TODO 2 on main)
+  mock_llm.py     deterministic mock LLM (no key needed)
   server.py       MCP server exposing get_order         (TODO 3 on main)
 tests/
   test_order_data.py   deterministic tests for lookup_order
@@ -65,22 +82,25 @@ tests/
 - Python 3.11 or newer (`python --version`).
 - GitHub Codespaces (recommended; Python and Node.js are preinstalled) **or** local Python.
 - Node.js 18+ for the MCP Inspector (`node --version`). Not needed for the agent itself.
-- A Google account for a free Gemini API key.
+- A Google account for a free Gemini API key (only for the final Gemini step).
 
-## 5. Get a Gemini API key
-
-1. Open [Google AI Studio](https://aistudio.google.com/apikey) and sign in.
-2. Click **Create API key** and copy it.
-
-## 6. Put the key in `.env`
+## 5. Create `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` in the editor and paste your key after the `=`:
+It starts with `USE_GEMINI=false`, so everything runs on the mock LLM and no
+key is needed yet.
+
+## 6. Switch to Gemini (when your instructor says so)
+
+1. Open [Google AI Studio](https://aistudio.google.com/apikey), sign in, click
+   **Create API key**, and copy it.
+2. In `.env`, paste the key and turn Gemini on:
 
 ```dotenv
+USE_GEMINI=true
 GEMINI_API_KEY=your_key_here
 ```
 
@@ -107,12 +127,25 @@ python -m mini_support_agent.agent
 python -m mini_support_agent.agent "Can you check order ord-102?"
 ```
 
-Example output (the wording varies between runs; the `order_id` and `status`
-come from the mock data and should not):
+With the mock LLM (`USE_GEMINI=false`) you get exactly this:
 
 ```text
+Model: mock LLM (set USE_GEMINI=true in .env for Gemini)
 Customer: Hi, my order ORD-101 still hasn't arrived. What's going on?
 
+{
+  "order_id": "ORD-101",
+  "status": "delayed",
+  "explanation": "Order ORD-101 (Mechanical keyboard) is delayed. Estimated delivery: 2026-10-30 (originally 2026-10-24; courier backlog).",
+  "suggested_reply": "Thanks for your patience! Your Mechanical keyboard (order ORD-101) is delayed. Estimated delivery: 2026-10-30 (originally 2026-10-24; courier backlog)."
+}
+```
+
+With Gemini (`USE_GEMINI=true`) the first line says `Model: Gemini` and the
+wording changes from run to run, but `order_id` and `status` come from the mock
+data and should not:
+
+```text
 {
   "order_id": "ORD-101",
   "status": "delayed",
@@ -125,13 +158,14 @@ Try an unknown order such as `ORD-999`: the status should be `not_found`.
 
 ## 9. Run the tests
 
-Offline tests (no API key, no cost):
+Offline tests (mock LLM, no API key, no cost):
 
 ```bash
 pytest
 ```
 
-Live Gemini smoke test (uses your key, makes about 4 API requests):
+Live Gemini smoke test (always uses Gemini, whatever `USE_GEMINI` says; needs your
+key and makes about 4 API requests):
 
 ```bash
 pytest -m live -v
@@ -166,23 +200,25 @@ npx @modelcontextprotocol/inspector --cli .venv/bin/python -m mini_support_agent
 
 ## 11. Exercise (branch `main`, about 25 minutes)
 
-1. Set up: steps 5-7 above. Run `pytest` and notice which tests fail.
+1. Set up: steps 5 and 7 above (mock LLM, no key). Run `pytest` and notice which tests fail.
 2. **TODO 1** in `order_data.py`: implement `lookup_order`. Run
    `pytest tests/test_order_data.py` until it passes.
 3. **TODO 2** in `agent.py`: register the `get_order` agent tool. Run
    `pytest tests/test_agent.py`, then `python -m mini_support_agent.agent`.
 4. **TODO 3** in `server.py`: expose `get_order` as an MCP tool. Run
    `pytest tests/test_server.py`, then open it in the MCP Inspector (step 10).
-5. Run `pytest -m live -v` for the final check against Gemini.
+5. Switch to Gemini (step 6), run `python -m mini_support_agent.agent` again
+   and compare its wording with the mock's. Finish with `pytest -m live -v`.
 
 ### TODO checklist
 
 - [ ] `lookup_order` strips spaces, upper-cases the ID, returns a copy of a known order, and returns `{"order_id": ..., "status": "not_found"}` for unknown IDs.
 - [ ] `get_order` is registered on `support_agent` as a tool and returns the shared lookup's result.
 - [ ] `get_order` is registered on `mcp_server` as an MCP tool and returns the shared lookup's result.
-- [ ] `pytest` passes (12 tests).
+- [ ] `pytest` passes (17 tests).
+- [ ] The agent answers ORD-101 with the mock LLM.
 - [ ] `get_order` shows up and runs in the MCP Inspector.
-- [ ] `pytest -m live -v` passes (2 tests).
+- [ ] With `USE_GEMINI=true`, the agent answers ORD-101 and `pytest -m live -v` passes (2 tests).
 
 ### Which test failures are expected on `main`
 
@@ -190,17 +226,18 @@ Before you finish the TODOs, these fail on purpose, each with a hint message:
 
 | TODO | Failing tests |
 |---|---|
-| 1 `lookup_order` | all of `test_order_data.py`; all of `test_agent.py` except the API-key test; `test_mcp_tool_uses_shared_lookup`, `test_server_works_over_stdio` |
-| 2 agent tool | `test_get_order_tool_is_registered`, `test_agent_tool_uses_shared_lookup`, `test_agent_answers_from_tool_data` |
+| 1 `lookup_order` | all of `test_order_data.py`; the four TODO 2 tests below; `test_mcp_tool_uses_shared_lookup`, `test_server_works_over_stdio` |
+| 2 agent tool | `test_get_order_tool_is_registered`, `test_agent_tool_uses_shared_lookup`, `test_mock_llm_answers_from_tool_data` (3 cases), `test_mock_llm_is_deterministic` |
 | 3 MCP tool | all of `test_server.py` |
 
-`test_missing_api_key_gives_helpful_error` should pass from the start. If it
+Three setup tests should pass from the start: `test_missing_api_key_gives_helpful_error`,
+`test_mock_llm_is_the_default` and `test_use_gemini_switches_to_gemini`. If one
 fails, your setup is wrong, not your TODO code.
 
 ## 12. You are done when
 
-- `pytest` prints `12 passed, 2 deselected`.
-- `python -m mini_support_agent.agent` prints a JSON reply with `"status": "delayed"` for ORD-101.
+- `pytest` prints `17 passed, 2 deselected`.
+- `python -m mini_support_agent.agent` prints `"status": "delayed"` for ORD-101, first with the mock LLM, then with Gemini.
 - The MCP Inspector lists `get_order` and returns the ORD-101 record.
 - `pytest -m live -v` prints `2 passed`.
 
@@ -208,7 +245,9 @@ fails, your setup is wrong, not your TODO code.
 
 | Problem | Fix |
 |---|---|
-| `GEMINI_API_KEY is not set` | Create `.env` from `.env.example` in the project root and paste your key. |
+| `GEMINI_API_KEY is not set` | You set `USE_GEMINI=true` (or ran `pytest -m live`) without a key. Paste your key into `.env`, or set `USE_GEMINI=false` to use the mock. |
+| `Mock LLM: the agent has no get_order tool` | Finish TODO 2: the mock calls `get_order` just like Gemini would. |
+| Output says `Model: mock LLM` but you wanted Gemini | Set `USE_GEMINI=true` in `.env` (in the project root) and save the file. |
 | `Gemini API error 400` / `403` | The key is wrong or disabled. Create a new one in AI Studio. |
 | `Gemini API error 429` | Free-tier limit (about 5 requests per minute for `gemini-2.5-flash`; each agent run uses 2). Wait a minute. |
 | `Gemini API error 503` or timeouts | Gemini is overloaded. Retry, or set `GEMINI_MODEL=gemini-3-flash-preview` (or `gemini-3.5-flash-lite`) in `.env`. |
@@ -230,5 +269,5 @@ fails, your setup is wrong, not your TODO code.
 
 ## 15. What is real and what is not
 
-- **Real:** the Gemini API calls, Pydantic validation, the MCP protocol and Inspector.
-- **Mocked:** every order. No real orders, customers, shipments, refunds, or emails exist or happen.
+- **Real:** the Gemini API calls (when `USE_GEMINI=true`), Pydantic validation, the MCP protocol and Inspector.
+- **Mocked:** the LLM by default (`USE_GEMINI=false`), and every order. No real orders, customers, shipments, refunds, or emails exist or happen.

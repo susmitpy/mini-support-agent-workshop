@@ -5,6 +5,9 @@ Division of labour:
 - The LLM interprets the customer's question, decides to call the tool, and
   drafts an explanation and a reply based only on what the tool returned.
 
+By default the LLM is a deterministic mock (no API key needed). Set
+``USE_GEMINI=true`` in ``.env`` to use the real Gemini model.
+
 Boundary: the agent only reads mock data. It cannot refund, email, cancel, or
 change anything, and its instructions forbid claiming that it did.
 
@@ -19,9 +22,11 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
+from mini_support_agent.mock_llm import build_mock_model
 from mini_support_agent.order_data import lookup_order  # noqa: F401 (used in your TODO)
 
 # gemini-2.5-flash was the most reliable Flash model in our October 2026
@@ -70,7 +75,7 @@ support_agent = Agent(output_type=SupportReply, instructions=INSTRUCTIONS)
 # TODO 2a: Register get_order as a tool on support_agent by adding a decorator
 #   on the line above "def". It needs no RunContext, so use the agent's
 #   "plain" tool decorator (see https://ai.pydantic.dev/tools/).
-#   Without it, Gemini cannot see the tool and has no order data to work with.
+#   Without it, the LLM (mock or Gemini) cannot see the tool and has no order data.
 def get_order(order_id: str) -> dict[str, str]:
     """Fetch a mock order record so the agent can answer from real (mock) data.
 
@@ -86,7 +91,22 @@ def get_order(order_id: str) -> dict[str, str]:
     raise NotImplementedError("TODO 2: implement the get_order agent tool in agent.py")
 
 
-def build_model() -> GoogleModel:
+def use_gemini() -> bool:
+    """Return True if ``.env`` sets ``USE_GEMINI`` to true/1/yes (default: False)."""
+    load_dotenv()
+    return os.getenv("USE_GEMINI", "false").strip().lower() in {"true", "1", "yes"}
+
+
+def build_model() -> Model:
+    """Pick the LLM for this run: the mock by default, Gemini if USE_GEMINI is true.
+
+    Returns:
+        A deterministic mock model, or a ``GoogleModel`` from ``build_gemini_model``.
+    """
+    return build_gemini_model() if use_gemini() else build_mock_model()
+
+
+def build_gemini_model() -> GoogleModel:
     """Create the Gemini model using the API key from ``.env``.
 
     Reads ``GEMINI_API_KEY`` (required) and ``GEMINI_MODEL`` (optional).
@@ -125,6 +145,8 @@ def ask(question: str) -> SupportReply:
 def main() -> None:
     """Command-line entry point: answer a question and print the JSON reply."""
     question = " ".join(sys.argv[1:]) or DEFAULT_QUESTION
+    mode = "Gemini" if use_gemini() else "mock LLM (set USE_GEMINI=true in .env for Gemini)"
+    print(f"Model: {mode}")
     print(f"Customer: {question}\n")
     try:
         reply = ask(question)
